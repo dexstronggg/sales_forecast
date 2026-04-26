@@ -97,7 +97,7 @@ def load_data(filepath: str) -> pd.DataFrame:
 def get_daily_sales(df: pd.DataFrame) -> pd.DataFrame:
     """
     Агрегирует данные по дням: суммарная выручка за каждый день.
-    Используется для обучения моделей временных рядов (ARIMA, Prophet).
+    Используется для обучения моделей прогнозирования (Random Forest, LightGBM, XGBoost).
 
     Returns:
         DataFrame с колонками ['ds', 'y'] — дата и выручка.
@@ -143,6 +143,25 @@ def get_category_sales(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
         .sort_values("revenue", ascending=False)
     )
+
+
+def get_daily_sales_filtered(
+    df: pd.DataFrame,
+    category: str = "Все категории",
+    mall: str = "Все ТЦ",
+) -> pd.DataFrame:
+    """
+    Агрегирует ежедневную выручку с фильтрацией по категории и/или торговому центру.
+
+    Returns:
+        DataFrame ['ds', 'y']
+    """
+    filtered = df.copy()
+    if category != "Все категории":
+        filtered = filtered[filtered["category"] == category]
+    if mall != "Все ТЦ":
+        filtered = filtered[filtered["shopping_mall"] == mall]
+    return get_daily_sales(filtered)
 
 
 def get_summary_stats(df: pd.DataFrame) -> dict:

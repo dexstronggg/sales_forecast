@@ -24,7 +24,10 @@ def _compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     mae  = mean_absolute_error(y_true, y_pred)
     rmse = np.sqrt(mean_squared_error(y_true, y_pred))
     mask = y_true != 0
-    mape = np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
+    if mask.any():
+        mape = np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
+    else:
+        mape = 0.0
     return {
         "MAE":  round(mae, 2),
         "RMSE": round(rmse, 2),
@@ -438,14 +441,60 @@ def run_xgboost(daily_df: pd.DataFrame, forecast_days: int = 30):
     return forecast_df, metrics, fig
 
 
-# ─── Сравнение моделей ────────────────────────────────────────────────────────
+# ─── Сравнение прогнозов на одной оси ────────────────────────────────────────
+
+def compare_forecasts_chart(forecasts: dict, history_ds=None, history_y=None) -> go.Figure:
+    """
+    Строит все прогнозы на одном графике для визуального сравнения.
+
+    Args:
+        forecasts:  {"Random Forest": forecast_df, "LightGBM": ..., "XGBoost": ...}
+        history_ds: опционально — исторические даты для контекста (последние 60 дней)
+        history_y:  опционально — исторические значения
+
+    Returns:
+        Plotly Figure
+    """
+    palette = {
+        "Random Forest": "#2563EB",
+        "LightGBM":      "#16A34A",
+        "XGBoost":       "#EF4444",
+    }
+    fig = go.Figure()
+
+    if history_ds is not None and history_y is not None:
+        fig.add_trace(go.Scatter(
+            x=history_ds, y=history_y,
+            mode="lines", name="История (последние 60 дн.)",
+            line=dict(color="#94A3B8", width=1.5, dash="dot"),
+        ))
+
+    for name, fc_df in forecasts.items():
+        color = palette.get(name, "#999999")
+        fig.add_trace(go.Scatter(
+            x=fc_df["ds"], y=fc_df["y_hat"],
+            mode="lines+markers", name=name,
+            line=dict(color=color, width=2),
+        ))
+
+    fig.update_layout(
+        title="Сравнение прогнозов всех моделей",
+        xaxis_title="Дата",
+        yaxis_title="Выручка",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+# ─── Сравнение метрик ─────────────────────────────────────────────────────────
 
 def compare_models(metrics_dict: dict) -> go.Figure:
     """
     Строит сравнительный столбчатый график метрик всех трёх моделей.
 
     Args:
-        metrics_dict: {"SARIMA": {...}, "LightGBM": {...}, "XGBoost": {...}}
+        metrics_dict: {"Random Forest": {...}, "LightGBM": {...}, "XGBoost": {...}}
 
     Returns:
         Plotly Figure

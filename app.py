@@ -15,7 +15,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 
-from data_loader import load_data, get_daily_sales, get_monthly_sales, get_summary_stats
+from data_loader import load_data, get_daily_sales_filtered, get_summary_stats
 from eda import (
     plot_revenue_over_time,
     plot_category_revenue,
@@ -25,7 +25,7 @@ from eda import (
     plot_heatmap_month_year,
     plot_top_products,
 )
-from models import run_random_forest, run_lightgbm, run_xgboost, compare_models
+from models import run_random_forest, run_lightgbm, run_xgboost, compare_models, compare_forecasts_chart
 from database import init_db, save_forecast, load_forecasts, load_forecast_values, delete_forecast
 
 # ─── Конфигурация страницы ────────────────────────────────────────────────────
@@ -67,7 +67,7 @@ with st.sidebar:
         label_visibility="collapsed",
     )
     st.markdown("---")
-    st.caption("Датасет: Customer Shopping Dataset\nИсточник: Kaggle\nПериод: 2021–2023")
+    st.caption("Информационная система прогнозирования продаж\nна основе методов интеллектуального анализа данных")
 
 
 # ─── Загрузка данных (кэшируем) ───────────────────────────────────────────────
@@ -81,12 +81,17 @@ def get_data(file):
 # ═══════════════════════════════════════════════════════════════════════════════
 if page == "🏠 Главная":
     st.markdown("## 🏠 Главная страница")
-    st.markdown("Загрузите CSV-файл датасета, чтобы начать работу.")
+    st.markdown(
+        "Информационная система прогнозирования продаж компании "
+        "с применением инструментов интеллектуального анализа данных. "
+        "Загрузите CSV-файл с историей продаж вашей компании, чтобы начать работу."
+    )
 
     uploaded = st.file_uploader(
-        "Выберите файл customer_shopping_data.csv",
+        "Загрузите CSV-файл с данными о продажах",
         type=["csv"],
-        help="Датасет: kaggle.com/datasets/mehmettahiraslan/customer-shopping-dataset",
+        help="Файл должен содержать столбцы с датой покупки, ценой, количеством, "
+             "категорией товара и точкой продаж (см. требования ниже).",
     )
 
     if uploaded:
@@ -120,7 +125,7 @@ if page == "🏠 Главная":
 
         st.markdown("### 📌 Описание столбцов")
         col_desc = {
-            "invoice_no":     "Номер чека",
+            "invoice_no":     "Номер чека / документа продажи",
             "customer_id":    "Идентификатор покупателя",
             "gender":         "Пол покупателя",
             "age":            "Возраст покупателя",
@@ -129,7 +134,7 @@ if page == "🏠 Главная":
             "price":          "Цена за единицу",
             "payment_method": "Способ оплаты",
             "invoice_date":   "Дата покупки",
-            "shopping_mall":  "Торговый центр",
+            "shopping_mall":  "Точка продаж (магазин, филиал, ТЦ)",
             "product_name":   "Название товара (добавлено при предобработке)",
             "revenue":        "Выручка = цена × количество",
         }
@@ -138,12 +143,27 @@ if page == "🏠 Главная":
         )
         st.dataframe(desc_df, use_container_width=True, hide_index=True)
     else:
-        st.info("👆 Пожалуйста, загрузите CSV-файл датасета.")
+        st.info("👆 Пожалуйста, загрузите CSV-файл с историей продаж.")
         st.markdown("""
-        **Как получить датасет:**
-        1. Перейдите на [Kaggle](https://www.kaggle.com/datasets/mehmettahiraslan/customer-shopping-dataset)
-        2. Нажмите **Download**
-        3. Распакуйте архив и загрузите `customer_shopping_data.csv`
+        **Требования к файлу:**
+
+        CSV-файл должен содержать следующие столбцы (регистр и пробелы не важны):
+
+        | Столбец | Тип | Назначение |
+        |---|---|---|
+        | `invoice_date` | дата | Дата продажи (формат `ДД/ММ/ГГГГ`) — **обязательно** |
+        | `price` | число | Цена за единицу — **обязательно** |
+        | `quantity` | число | Количество единиц — **обязательно** |
+        | `category` | текст | Категория товара — для аналитики и фильтров |
+        | `shopping_mall` | текст | Точка продаж (магазин/филиал) — для аналитики и фильтров |
+        | `payment_method` | текст | Способ оплаты — для EDA |
+        | `invoice_no`, `customer_id`, `gender`, `age` | — | Опционально |
+
+        Для построения прогноза достаточно минимум **60 дней истории продаж**.
+        Чем длиннее история — тем точнее будет прогноз.
+
+        💡 *Для демонстрации работы системы можно использовать открытый датасет
+        [Customer Shopping Dataset](https://www.kaggle.com/datasets/mehmettahiraslan/customer-shopping-dataset) с Kaggle.*
         """)
 
 
@@ -207,7 +227,6 @@ elif page == "🔮 Прогнозирование":
         st.stop()
 
     df = st.session_state["df"]
-    daily_df = get_daily_sales(df)
 
     # ── Настройки в сайдбаре ──
     with st.sidebar:
@@ -215,12 +234,31 @@ elif page == "🔮 Прогнозирование":
         model_choice = st.selectbox(
             "Метод ИАД",
             ["Random Forest", "LightGBM", "XGBoost", "Сравнить все"],
-            help="Выберите модель для прогнозирования",
         )
         horizon = st.slider(
             "Горизонт прогноза (дней)", min_value=7, max_value=90, value=30, step=7
         )
+        st.markdown("### 🔍 Фильтры данных")
+        category_options = ["Все категории"] + sorted(df["category"].unique().tolist())
+        mall_options     = ["Все ТЦ"] + sorted(df["shopping_mall"].unique().tolist())
+        selected_category = st.selectbox("Категория товара", category_options)
+        selected_mall     = st.selectbox("Торговый центр",   mall_options)
         save_result = st.checkbox("Сохранить результат в БД", value=True)
+
+    daily_df = get_daily_sales_filtered(df, selected_category, selected_mall)
+
+    # Проверка достаточности данных после фильтрации
+    if len(daily_df) < 60:
+        st.error("Недостаточно данных для выбранного фильтра (менее 60 дней). Выберите другую категорию или ТЦ.")
+        st.stop()
+
+    filter_label = ""
+    if selected_category != "Все категории":
+        filter_label += f" · {selected_category}"
+    if selected_mall != "Все ТЦ":
+        filter_label += f" · {selected_mall}"
+    if filter_label:
+        st.caption(f"Фильтр:{filter_label} · {len(daily_df)} дней данных")
 
     # ── Описание выбранного метода ──
     method_info = {
@@ -235,29 +273,114 @@ elif page == "🔮 Прогнозирование":
             "скользящие средние, стандартное отклонение и флаг выходного дня."
         ),
         "XGBoost": (
-            "**XGBoost** — градиентный бустинг (машинное обучение). "
-            "Использует лаговые признаки и временные паттерны для прогноза."
+            "**XGBoost** — градиентный бустинг с level-wise ростом деревьев "
+            "(в отличие от leaf-wise у LightGBM). Использует компактный набор лагов "
+            "(1/7/14/30 дней) и скользящие средние 7/30 дней. "
+            "Level-wise рост менее склонен к переобучению на малых выборках."
         ),
     }
     if model_choice in method_info:
         st.info(method_info[model_choice])
     else:
-        st.info("Будут запущены все три модели и показано сравнение метрик качества.")
+        st.info("Будут запущены все три модели и показано сравнение метрик и прогнозов.")
+
+    # ── Объяснение метрик качества ──
+    with st.expander("ℹ️ Что означают метрики качества (MAE, RMSE, MAPE)"):
+        st.markdown("""
+После обучения модель проверяется на **20% данных, которые она не видела** при обучении
+(тестовая выборка). Прогноз модели сравнивается с фактом, и считаются три метрики ошибки:
+
+#### 📏 MAE — Mean Absolute Error (средняя абсолютная ошибка)
+
+$$ MAE = \\frac{1}{n} \\sum |y_{факт} - y_{прогноз}| $$
+
+Среднее отклонение прогноза от факта **в тех же единицах, что и выручка**.
+Например, MAE = 22 500 означает: в среднем модель ошибается на 22 500 ден. ед. в день.
+*Чем меньше — тем лучше.*
+
+#### 📐 RMSE — Root Mean Squared Error (корень из средней квадратичной ошибки)
+
+$$ RMSE = \\sqrt{\\frac{1}{n} \\sum (y_{факт} - y_{прогноз})^2} $$
+
+Похож на MAE, но **крупные ошибки штрафуются сильнее** (возводятся в квадрат).
+Если RMSE значительно больше MAE — у модели есть редкие, но крупные промахи (выбросы).
+*Чем меньше — тем лучше.*
+
+#### 📊 MAPE — Mean Absolute Percentage Error (средняя процентная ошибка)
+
+$$ MAPE = \\frac{1}{n} \\sum \\left| \\frac{y_{факт} - y_{прогноз}}{y_{факт}} \\right| \\times 100\\% $$
+
+Универсальная метрика — ошибка в процентах, не зависит от единиц измерения.
+Позволяет сравнивать модели на разных датасетах.
+
+**Шкала качества (по Льюису, 1982):**
+
+| MAPE | Качество прогноза |
+|---|---|
+| 🟢 < 10% | **Отлично** — высокая точность |
+| 🟡 10–20% | **Хорошо** — удовлетворительная точность |
+| 🟠 20–30% | **Удовлетворительно** — приемлемо для нестабильных рядов |
+| 🔴 30–50% | **Слабо** — модель требует доработки |
+| ⛔ > 50% | **Неточно** — прогноз непригоден |
+
+---
+
+💡 **Важно понимать:** «реалистично выглядящий» прогноз (с колебаниями) часто
+даёт **большую** ошибку, чем гладкая линия около среднего. Метрики измеряют
+**точность попадания в конкретный день**, а не визуальную «похожесть» на
+исторический ряд. Прогноз с колебаниями верно угадывает амплитуду продаж,
+но обычно ошибается в фазе (когда именно будет подъём) — это даёт двойную
+ошибку: и в день фактического подъёма, и в день прогнозного.
+        """)
+
+    # ── Вспомогательные функции ──
+    def mape_badge(mape: float) -> str:
+        if mape < 10:
+            color, label = "#16A34A", "Отлично"
+        elif mape < 20:
+            color, label = "#65A30D", "Хорошо"
+        elif mape < 30:
+            color, label = "#D97706", "Удовлетворительно"
+        elif mape < 50:
+            color, label = "#EA580C", "Слабо"
+        else:
+            color, label = "#DC2626", "Неточно"
+        return (
+            f'<span style="background:{color};color:white;padding:3px 10px;'
+            f'border-radius:5px;font-size:13px;font-weight:600">{label} ({mape:.2f}%)</span>'
+        )
+
+    def show_metrics(metrics: dict):
+        c1, c2, c3 = st.columns(3)
+        c1.metric("MAE",  f"{metrics['MAE']:,.2f}")
+        c2.metric("RMSE", f"{metrics['RMSE']:,.2f}")
+        with c3:
+            st.metric("MAPE", "")
+            st.markdown(mape_badge(metrics["MAPE"]), unsafe_allow_html=True)
+
+    def export_button(fc_df: pd.DataFrame, model_name: str):
+        csv = fc_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="⬇️ Скачать прогноз CSV",
+            data=csv,
+            file_name=f"forecast_{model_name.replace(' ', '_')}_{horizon}d.csv",
+            mime="text/csv",
+        )
 
     # ── Запуск ──
     if st.button("▶️ Запустить прогноз", type="primary", use_container_width=True):
-        all_metrics = {}
+        all_metrics   = {}
+        all_forecasts = {}
 
         if model_choice in ["Random Forest", "Сравнить все"]:
             with st.spinner("Обучение Random Forest..."):
                 fc, metrics, fig = run_random_forest(daily_df, forecast_days=horizon)
             st.markdown("### Random Forest")
             st.plotly_chart(fig, use_container_width=True)
-            c1, c2, c3 = st.columns(3)
-            c1.metric("MAE",  f"{metrics['MAE']:,.2f}")
-            c2.metric("RMSE", f"{metrics['RMSE']:,.2f}")
-            c3.metric("MAPE", f"{metrics['MAPE']:.2f}%")
-            all_metrics["Random Forest"] = metrics
+            show_metrics(metrics)
+            export_button(fc, "Random Forest")
+            all_metrics["Random Forest"]   = metrics
+            all_forecasts["Random Forest"] = fc
             if save_result:
                 fid = save_forecast("Random Forest", metrics, fc, horizon)
                 st.success(f"💾 Random Forest сохранена (ID: {fid})")
@@ -267,11 +390,10 @@ elif page == "🔮 Прогнозирование":
                 fc, metrics, fig = run_lightgbm(daily_df, forecast_days=horizon)
             st.markdown("### LightGBM")
             st.plotly_chart(fig, use_container_width=True)
-            c1, c2, c3 = st.columns(3)
-            c1.metric("MAE",  f"{metrics['MAE']:,.2f}")
-            c2.metric("RMSE", f"{metrics['RMSE']:,.2f}")
-            c3.metric("MAPE", f"{metrics['MAPE']:.2f}%")
-            all_metrics["LightGBM"] = metrics
+            show_metrics(metrics)
+            export_button(fc, "LightGBM")
+            all_metrics["LightGBM"]   = metrics
+            all_forecasts["LightGBM"] = fc
             if save_result:
                 fid = save_forecast("LightGBM", metrics, fc, horizon)
                 st.success(f"💾 LightGBM сохранена (ID: {fid})")
@@ -281,25 +403,38 @@ elif page == "🔮 Прогнозирование":
                 fc, metrics, fig = run_xgboost(daily_df, forecast_days=horizon)
             st.markdown("### XGBoost")
             st.plotly_chart(fig, use_container_width=True)
-            c1, c2, c3 = st.columns(3)
-            c1.metric("MAE",  f"{metrics['MAE']:,.2f}")
-            c2.metric("RMSE", f"{metrics['RMSE']:,.2f}")
-            c3.metric("MAPE", f"{metrics['MAPE']:.2f}%")
-            all_metrics["XGBoost"] = metrics
+            show_metrics(metrics)
+            export_button(fc, "XGBoost")
+            all_metrics["XGBoost"]   = metrics
+            all_forecasts["XGBoost"] = fc
             if save_result:
                 fid = save_forecast("XGBoost", metrics, fc, horizon)
                 st.success(f"💾 XGBoost сохранена (ID: {fid})")
 
-        # ── Сравнительный график ──
+        # ── Сравнение моделей ──
         if len(all_metrics) > 1:
             st.markdown("### 📊 Сравнение моделей")
+
+            # Последние 60 дней истории для контекста на графике
+            history_tail = daily_df.tail(60)
+            st.plotly_chart(
+                compare_forecasts_chart(
+                    all_forecasts,
+                    history_ds=history_tail["ds"],
+                    history_y=history_tail["y"],
+                ),
+                use_container_width=True,
+            )
+
             st.plotly_chart(compare_models(all_metrics), use_container_width=True)
 
-            st.markdown("**Интерпретация метрик:**")
+            st.markdown("**Краткая интерпретация:**")
             st.markdown("""
-            - **MAE** (Mean Absolute Error) — средняя ошибка в единицах выручки. Чем меньше — тем лучше.
-            - **RMSE** (Root Mean Squared Error) — сильнее штрафует крупные ошибки. Чем меньше — тем лучше.
-            - **MAPE** (Mean Absolute Percentage Error) — ошибка в процентах. Значение < 10% считается хорошим.
+            - **MAE** — средняя ошибка в единицах выручки. Чем меньше — тем лучше.
+            - **RMSE** — сильнее штрафует крупные выбросы. Чем меньше — тем лучше.
+            - **MAPE** — ошибка в %. 🟢 <10% отлично · 🟡 10–20% хорошо · 🟠 20–30% удовл. · 🔴 30–50% слабо · ⛔ >50% неточно.
+
+            *Подробное объяснение метрик — в блоке «ℹ️ Что означают метрики качества» вверху страницы.*
             """)
 
 
