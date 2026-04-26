@@ -25,7 +25,7 @@ from eda import (
     plot_heatmap_month_year,
     plot_top_products,
 )
-from models import run_arima, run_prophet, run_xgboost, compare_models
+from models import run_random_forest, run_lightgbm, run_xgboost, compare_models
 from database import init_db, save_forecast, load_forecasts, load_forecast_values, delete_forecast
 
 # ─── Конфигурация страницы ────────────────────────────────────────────────────
@@ -214,7 +214,7 @@ elif page == "🔮 Прогнозирование":
         st.markdown("### ⚙️ Настройки прогноза")
         model_choice = st.selectbox(
             "Метод ИАД",
-            ["ARIMA", "Prophet", "XGBoost", "Сравнить все"],
+            ["Random Forest", "LightGBM", "XGBoost", "Сравнить все"],
             help="Выберите модель для прогнозирования",
         )
         horizon = st.slider(
@@ -224,14 +224,15 @@ elif page == "🔮 Прогнозирование":
 
     # ── Описание выбранного метода ──
     method_info = {
-        "ARIMA": (
-            "**ARIMA** (AutoRegressive Integrated Moving Average) — "
-            "классический статистический метод для временных рядов. "
-            "Учитывает тренд, автокорреляцию и скользящее среднее ошибок."
+        "Random Forest": (
+            "**Random Forest** — ансамбль из 500 независимых деревьев решений (бэггинг). "
+            "Использует лаги 1–30 дней, скользящие средние, медиану и стандартное отклонение. "
+            "В отличие от бустинга, деревья строятся параллельно и независимо."
         ),
-        "Prophet": (
-            "**Prophet** (Meta) — современный метод декомпозиции временных рядов. "
-            "Автоматически выявляет тренд, годовую и недельную сезонность."
+        "LightGBM": (
+            "**LightGBM** (Microsoft) — быстрый градиентный бустинг с leaf-wise ростом деревьев. "
+            "Использует расширенный набор лаговых признаков (1/7/14/21/30 дней), "
+            "скользящие средние, стандартное отклонение и флаг выходного дня."
         ),
         "XGBoost": (
             "**XGBoost** — градиентный бустинг (машинное обучение). "
@@ -247,33 +248,33 @@ elif page == "🔮 Прогнозирование":
     if st.button("▶️ Запустить прогноз", type="primary", use_container_width=True):
         all_metrics = {}
 
-        if model_choice in ["ARIMA", "Сравнить все"]:
-            with st.spinner("Обучение ARIMA..."):
-                fc, metrics, fig = run_arima(daily_df, forecast_days=horizon)
-            st.markdown("### ARIMA")
+        if model_choice in ["Random Forest", "Сравнить все"]:
+            with st.spinner("Обучение Random Forest..."):
+                fc, metrics, fig = run_random_forest(daily_df, forecast_days=horizon)
+            st.markdown("### Random Forest")
             st.plotly_chart(fig, use_container_width=True)
             c1, c2, c3 = st.columns(3)
             c1.metric("MAE",  f"{metrics['MAE']:,.2f}")
             c2.metric("RMSE", f"{metrics['RMSE']:,.2f}")
             c3.metric("MAPE", f"{metrics['MAPE']:.2f}%")
-            all_metrics["ARIMA"] = metrics
+            all_metrics["Random Forest"] = metrics
             if save_result:
-                fid = save_forecast("ARIMA", metrics, fc, horizon)
-                st.success(f"💾 ARIMA сохранена (ID: {fid})")
+                fid = save_forecast("Random Forest", metrics, fc, horizon)
+                st.success(f"💾 Random Forest сохранена (ID: {fid})")
 
-        if model_choice in ["Prophet", "Сравнить все"]:
-            with st.spinner("Обучение Prophet..."):
-                fc, metrics, fig = run_prophet(daily_df, forecast_days=horizon)
-            st.markdown("### Prophet")
+        if model_choice in ["LightGBM", "Сравнить все"]:
+            with st.spinner("Обучение LightGBM..."):
+                fc, metrics, fig = run_lightgbm(daily_df, forecast_days=horizon)
+            st.markdown("### LightGBM")
             st.plotly_chart(fig, use_container_width=True)
             c1, c2, c3 = st.columns(3)
             c1.metric("MAE",  f"{metrics['MAE']:,.2f}")
             c2.metric("RMSE", f"{metrics['RMSE']:,.2f}")
             c3.metric("MAPE", f"{metrics['MAPE']:.2f}%")
-            all_metrics["Prophet"] = metrics
+            all_metrics["LightGBM"] = metrics
             if save_result:
-                fid = save_forecast("Prophet", metrics, fc, horizon)
-                st.success(f"💾 Prophet сохранена (ID: {fid})")
+                fid = save_forecast("LightGBM", metrics, fc, horizon)
+                st.success(f"💾 LightGBM сохранена (ID: {fid})")
 
         if model_choice in ["XGBoost", "Сравнить все"]:
             with st.spinner("Обучение XGBoost..."):
