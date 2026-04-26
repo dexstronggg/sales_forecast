@@ -97,7 +97,7 @@ def load_data(filepath: str) -> pd.DataFrame:
 def get_daily_sales(df: pd.DataFrame) -> pd.DataFrame:
     """
     Агрегирует данные по дням: суммарная выручка за каждый день.
-    Используется для обучения моделей прогнозирования (Random Forest, LightGBM, XGBoost).
+    Используется для обучения моделей прогнозирования (Prophet, XGBoost).
 
     Returns:
         DataFrame с колонками ['ds', 'y'] — дата и выручка.

@@ -25,7 +25,7 @@ from eda import (
     plot_heatmap_month_year,
     plot_top_products,
 )
-from models import run_random_forest, run_lightgbm, run_xgboost, compare_models, compare_forecasts_chart
+from models import run_prophet, run_xgboost, compare_models, compare_forecasts_chart
 from database import init_db, save_forecast, load_forecasts, load_forecast_values, delete_forecast
 
 # ─── Конфигурация страницы ────────────────────────────────────────────────────
@@ -233,7 +233,7 @@ elif page == "🔮 Прогнозирование":
         st.markdown("### ⚙️ Настройки прогноза")
         model_choice = st.selectbox(
             "Метод ИАД",
-            ["Random Forest", "LightGBM", "XGBoost", "Сравнить все"],
+            ["Prophet", "XGBoost", "Сравнить обе"],
         )
         horizon = st.slider(
             "Горизонт прогноза (дней)", min_value=7, max_value=90, value=30, step=7
@@ -262,27 +262,24 @@ elif page == "🔮 Прогнозирование":
 
     # ── Описание выбранного метода ──
     method_info = {
-        "Random Forest": (
-            "**Random Forest** — ансамбль из 500 независимых деревьев решений (бэггинг). "
-            "Использует лаги 1–30 дней, скользящие средние, медиану и стандартное отклонение. "
-            "В отличие от бустинга, деревья строятся параллельно и независимо."
-        ),
-        "LightGBM": (
-            "**LightGBM** (Microsoft) — быстрый градиентный бустинг с leaf-wise ростом деревьев. "
-            "Использует расширенный набор лаговых признаков (1/7/14/21/30 дней), "
-            "скользящие средние, стандартное отклонение и флаг выходного дня."
+        "Prophet": (
+            "**Prophet** (Meta) — статистический метод декомпозиции временного ряда "
+            "на тренд (кусочно-линейный) и сезонные компоненты (годовая и недельная). "
+            "Не требует feature engineering — работает напрямую с парой (дата, значение). "
+            "Сильная сторона — устойчивая экстраполяция тренда и сезонности."
         ),
         "XGBoost": (
-            "**XGBoost** — градиентный бустинг с level-wise ростом деревьев "
-            "(в отличие от leaf-wise у LightGBM). Использует компактный набор лагов "
-            "(1/7/14/30 дней) и скользящие средние 7/30 дней. "
-            "Level-wise рост менее склонен к переобучению на малых выборках."
+            "**XGBoost** — градиентный бустинг на деревьях решений (машинное обучение). "
+            "Превращает временной ряд в таблицу признаков (лаги 1/7/14/30 дней, "
+            "скользящие средние 7/30, день недели, месяц) и обучается прогнозировать продажи. "
+            "Сильная сторона — улавливает нелинейные взаимодействия между признаками."
         ),
     }
     if model_choice in method_info:
         st.info(method_info[model_choice])
     else:
-        st.info("Будут запущены все три модели и показано сравнение метрик и прогнозов.")
+        st.info("Будут запущены обе модели и показано сравнение метрик и прогнозов "
+                "(статистический метод vs машинное обучение).")
 
     # ── Объяснение метрик качества ──
     with st.expander("ℹ️ Что означают метрики качества (MAE, RMSE, MAPE)"):
@@ -412,35 +409,7 @@ $$ MAPE = \\frac{1}{n} \\sum \\left| \\frac{y_{факт} - y_{прогноз}}{y
         all_metrics   = {}
         all_forecasts = {}
 
-        if model_choice in ["Random Forest", "Сравнить все"]:
-            with st.spinner("Обучение Random Forest..."):
-                fc, metrics, fig = run_random_forest(daily_df, forecast_days=horizon)
-            st.markdown("### Random Forest")
-            st.plotly_chart(fig, use_container_width=True)
-            show_metrics(metrics)
-            show_forecast_conclusion(daily_df, fc, "Random Forest", horizon)
-            export_button(fc, "Random Forest")
-            all_metrics["Random Forest"]   = metrics
-            all_forecasts["Random Forest"] = fc
-            if save_result:
-                fid = save_forecast("Random Forest", metrics, fc, horizon)
-                st.success(f"💾 Random Forest сохранена (ID: {fid})")
-
-        if model_choice in ["LightGBM", "Сравнить все"]:
-            with st.spinner("Обучение LightGBM..."):
-                fc, metrics, fig = run_lightgbm(daily_df, forecast_days=horizon)
-            st.markdown("### LightGBM")
-            st.plotly_chart(fig, use_container_width=True)
-            show_metrics(metrics)
-            show_forecast_conclusion(daily_df, fc, "LightGBM", horizon)
-            export_button(fc, "LightGBM")
-            all_metrics["LightGBM"]   = metrics
-            all_forecasts["LightGBM"] = fc
-            if save_result:
-                fid = save_forecast("LightGBM", metrics, fc, horizon)
-                st.success(f"💾 LightGBM сохранена (ID: {fid})")
-
-        if model_choice in ["XGBoost", "Сравнить все"]:
+        if model_choice in ["XGBoost", "Сравнить обе"]:
             with st.spinner("Обучение XGBoost..."):
                 fc, metrics, fig = run_xgboost(daily_df, forecast_days=horizon)
             st.markdown("### XGBoost")
@@ -453,6 +422,20 @@ $$ MAPE = \\frac{1}{n} \\sum \\left| \\frac{y_{факт} - y_{прогноз}}{y
             if save_result:
                 fid = save_forecast("XGBoost", metrics, fc, horizon)
                 st.success(f"💾 XGBoost сохранена (ID: {fid})")
+
+        if model_choice in ["Prophet", "Сравнить обе"]:
+            with st.spinner("Обучение Prophet..."):
+                fc, metrics, fig = run_prophet(daily_df, forecast_days=horizon)
+            st.markdown("### Prophet")
+            st.plotly_chart(fig, use_container_width=True)
+            show_metrics(metrics)
+            show_forecast_conclusion(daily_df, fc, "Prophet", horizon)
+            export_button(fc, "Prophet")
+            all_metrics["Prophet"]   = metrics
+            all_forecasts["Prophet"] = fc
+            if save_result:
+                fid = save_forecast("Prophet", metrics, fc, horizon)
+                st.success(f"💾 Prophet сохранена (ID: {fid})")
 
         # ── Сравнение моделей ──
         if len(all_metrics) > 1:

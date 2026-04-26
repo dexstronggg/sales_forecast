@@ -1,10 +1,9 @@
 """
 Модуль прогнозирования продаж.
 
-Реализованы три метода интеллектуального анализа данных:
-1. Random Forest — ансамбль деревьев решений (бэггинг, sklearn)
-2. LightGBM     — градиентный бустинг с расширенным набором признаков
-3. XGBoost      — градиентный бустинг (базовая версия для сравнения)
+Реализованы два метода интеллектуального анализа данных из разных семейств:
+1. Prophet  — декомпозиция временного ряда на тренд и сезонные компоненты (Meta)
+2. XGBoost  — градиентный бустинг на деревьях решений (машинное обучение)
 
 Каждая функция возвращает:
 - forecast_df : DataFrame с прогнозными значениями
@@ -12,10 +11,16 @@
 - fig         : Plotly-фигура с визуализацией прогноза
 """
 
+import logging
+
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+# Подавляем многословные логи Prophet/cmdstanpy при обучении
+logging.getLogger("prophet").setLevel(logging.WARNING)
+logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
 
 
 # ─── Вспомогательные функции ──────────────────────────────────────────────────
@@ -90,22 +95,20 @@ def _make_ci(forecast_values: np.ndarray, residual_std: float) -> tuple:
     return lower, upper
 
 
-# ─── 1. Random Forest ─────────────────────────────────────────────────────────
+# ─── 1. Prophet ───────────────────────────────────────────────────────────────
 
-def run_random_forest(daily_df: pd.DataFrame, forecast_days: int = 30):
+def run_prophet(daily_df: pd.DataFrame, forecast_days: int = 30):
     """
-    Random Forest — ансамбль независимых деревьев решений (бэггинг).
+    Prophet — метод декомпозиции временного ряда (Meta / Facebook).
 
-    Отличие от XGBoost/LightGBM: деревья строятся параллельно и независимо,
-    результат — среднее по всем деревьям. Бустинг исправляет ошибки итерационно,
-    Random Forest усредняет разнообразие — разные подходы к снижению дисперсии.
+    Раскладывает ряд продаж на три аддитивные компоненты:
+    - тренд (кусочно-линейный с автоматическими точками излома),
+    - годовая сезонность (ряд Фурье),
+    - недельная сезонность (ряд Фурье).
 
-    Признаки: лаги 1/2/3/7/14/21/28/30 дней, скользящие средние и медиана 7/14/30,
-    скользящее стандартное отклонение 7/30, день недели, месяц, квартал,
-    номер дня года, флаг выходного дня.
-
-    Прогноз строится рекуррентно: каждый следующий день предсказывается
-    на основе предыдущих прогнозных значений.
+    Не требует стационарности и feature engineering — работает напрямую
+    с парой (дата, значение). Сильная сторона — устойчивая экстраполяция
+    тренда и сезонных паттернов на длинный горизонт.
 
     Args:
         daily_df:      DataFrame ['ds','y']
@@ -114,228 +117,58 @@ def run_random_forest(daily_df: pd.DataFrame, forecast_days: int = 30):
     Returns:
         forecast_df, metrics, fig
     """
-    from sklearn.ensemble import RandomForestRegressor
+    from prophet import Prophet
 
     df = daily_df.copy()
-    df = df.set_index("ds").asfreq("D").fillna(0).reset_index()
-
-    def make_features(d: pd.DataFrame) -> pd.DataFrame:
-        d = d.copy()
-        d["dayofweek"]  = d["ds"].dt.dayofweek
-        d["month"]      = d["ds"].dt.month
-        d["quarter"]    = d["ds"].dt.quarter
-        d["dayofyear"]  = d["ds"].dt.dayofyear
-        d["year"]       = d["ds"].dt.year
-        d["is_weekend"] = (d["ds"].dt.dayofweek >= 5).astype(int)
-        for lag in [1, 2, 3, 7, 14, 21, 28, 30]:
-            d[f"lag_{lag}"] = d["y"].shift(lag)
-        d["rolling_7"]   = d["y"].shift(1).rolling(7).mean()
-        d["rolling_14"]  = d["y"].shift(1).rolling(14).mean()
-        d["rolling_30"]  = d["y"].shift(1).rolling(30).mean()
-        d["median_7"]    = d["y"].shift(1).rolling(7).median()
-        d["std_7"]       = d["y"].shift(1).rolling(7).std()
-        d["std_30"]      = d["y"].shift(1).rolling(30).std()
-        return d
-
-    df = make_features(df)
-    df = df.dropna()
-
-    feature_cols = [
-        "dayofweek", "month", "quarter", "dayofyear", "year", "is_weekend",
-        "lag_1", "lag_2", "lag_3", "lag_7", "lag_14", "lag_21", "lag_28", "lag_30",
-        "rolling_7", "rolling_14", "rolling_30", "median_7", "std_7", "std_30",
-    ]
+    df = df.set_index("ds").asfreq("D").fillna(method="ffill").reset_index()
 
     split = int(len(df) * 0.8)
     train, test = df.iloc[:split], df.iloc[split:]
 
-    X_train, y_train = train[feature_cols], train["y"]
-    X_test,  y_test  = test[feature_cols],  test["y"]
-
-    model = RandomForestRegressor(
-        n_estimators=500,
-        max_depth=10,
-        min_samples_leaf=5,
-        n_jobs=-1,
-        random_state=42,
+    # 1. Валидация на отложенной выборке: обучаемся на train, прогнозируем test
+    val_model = Prophet(
+        yearly_seasonality=True,
+        weekly_seasonality=True,
+        daily_seasonality=False,
+        interval_width=0.95,
     )
-    model.fit(X_train, y_train)
+    val_model.fit(train[["ds", "y"]])
+    val_future = val_model.make_future_dataframe(periods=len(test))
+    val_forecast = val_model.predict(val_future)
+    test_pred = val_forecast.iloc[-len(test):]["yhat"].values
+    metrics = _compute_metrics(test["y"].values, test_pred)
 
-    test_pred    = model.predict(X_test)
-    metrics      = _compute_metrics(y_test.values, test_pred)
-    residual_std = float(np.std(y_test.values - test_pred))
+    # 2. Финальная модель на всех данных + прогноз вперёд
+    model = Prophet(
+        yearly_seasonality=True,
+        weekly_seasonality=True,
+        daily_seasonality=False,
+        interval_width=0.95,
+    )
+    model.fit(df[["ds", "y"]])
+    future = model.make_future_dataframe(periods=forecast_days)
+    forecast = model.predict(future)
+    fc_tail = forecast.iloc[-forecast_days:]
 
-    # Рекуррентный прогноз в будущее
-    last_known  = df.copy()
-    future_rows = []
-    last_date   = df["ds"].max()
-
-    for i in range(1, forecast_days + 1):
-        next_date = last_date + pd.Timedelta(days=i)
-        row = {
-            "ds":         next_date,
-            "dayofweek":  next_date.dayofweek,
-            "month":      next_date.month,
-            "quarter":    next_date.quarter,
-            "dayofyear":  next_date.dayofyear,
-            "year":       next_date.year,
-            "is_weekend": int(next_date.dayofweek >= 5),
-        }
-        all_y = list(last_known["y"].values) + [r["y_hat"] for r in future_rows]
-        for lag in [1, 2, 3, 7, 14, 21, 28, 30]:
-            row[f"lag_{lag}"] = all_y[-lag] if len(all_y) >= lag else 0
-        row["rolling_7"]  = np.mean(all_y[-7:])   if len(all_y) >= 7  else np.mean(all_y)
-        row["rolling_14"] = np.mean(all_y[-14:])  if len(all_y) >= 14 else np.mean(all_y)
-        row["rolling_30"] = np.mean(all_y[-30:])  if len(all_y) >= 30 else np.mean(all_y)
-        row["median_7"]   = np.median(all_y[-7:]) if len(all_y) >= 7  else np.median(all_y)
-        row["std_7"]      = np.std(all_y[-7:])    if len(all_y) >= 7  else np.std(all_y)
-        row["std_30"]     = np.std(all_y[-30:])   if len(all_y) >= 30 else np.std(all_y)
-
-        X_future     = pd.DataFrame([row])[feature_cols]
-        row["y_hat"] = float(model.predict(X_future)[0])
-        future_rows.append(row)
-
-    forecast_df = pd.DataFrame(future_rows)[["ds", "y_hat"]]
-    lower, upper = _make_ci(forecast_df["y_hat"].values, residual_std)
-    forecast_df["lower"] = lower
-    forecast_df["upper"] = upper
+    forecast_df = pd.DataFrame({
+        "ds":    fc_tail["ds"].values,
+        "y_hat": fc_tail["yhat"].values,
+        "lower": fc_tail["yhat_lower"].values,
+        "upper": fc_tail["yhat_upper"].values,
+    })
 
     fig = _forecast_plot(
         history_ds=train["ds"], history_y=train["y"],
         forecast_ds=forecast_df["ds"], forecast_y=forecast_df["y_hat"],
         test_ds=test["ds"], test_y=test["y"],
-        title="Random Forest — Прогноз ежедневной выручки",
-        lower=lower, upper=upper,
+        title="Prophet — Прогноз ежедневной выручки",
+        lower=forecast_df["lower"].values, upper=forecast_df["upper"].values,
     )
 
     return forecast_df, metrics, fig
 
 
-# ─── 2. LightGBM ──────────────────────────────────────────────────────────────
-
-def run_lightgbm(daily_df: pd.DataFrame, forecast_days: int = 30):
-    """
-    LightGBM — градиентный бустинг на деревьях решений (Microsoft).
-
-    Отличия от XGBoost:
-    - Растит деревья листьями (leaf-wise), а не уровнями (level-wise)
-    - Более гибкая регуляризация (num_leaves, min_child_samples)
-    - Расширенный набор признаков: лаги 1/7/14/21/30 дней,
-      скользящие средние 7/14/30 дней, скользящее стандартное отклонение,
-      флаг выходного дня
-
-    Прогноз строится рекуррентно: каждый следующий день предсказывается
-    на основе предыдущих прогнозных значений.
-
-    Args:
-        daily_df:      DataFrame ['ds','y']
-        forecast_days: горизонт прогноза в днях
-
-    Returns:
-        forecast_df, metrics, fig
-    """
-    from lightgbm import LGBMRegressor
-
-    df = daily_df.copy()
-    df = df.set_index("ds").asfreq("D").fillna(0).reset_index()
-
-    def make_features(d: pd.DataFrame) -> pd.DataFrame:
-        d = d.copy()
-        d["dayofweek"]  = d["ds"].dt.dayofweek
-        d["month"]      = d["ds"].dt.month
-        d["quarter"]    = d["ds"].dt.quarter
-        d["dayofyear"]  = d["ds"].dt.dayofyear
-        d["year"]       = d["ds"].dt.year
-        d["is_weekend"] = (d["ds"].dt.dayofweek >= 5).astype(int)
-        for lag in [1, 7, 14, 21, 30]:
-            d[f"lag_{lag}"] = d["y"].shift(lag)
-        d["rolling_7"]  = d["y"].shift(1).rolling(7).mean()
-        d["rolling_14"] = d["y"].shift(1).rolling(14).mean()
-        d["rolling_30"] = d["y"].shift(1).rolling(30).mean()
-        d["std_7"]      = d["y"].shift(1).rolling(7).std()
-        return d
-
-    df = make_features(df)
-    df = df.dropna()
-
-    feature_cols = [
-        "dayofweek", "month", "quarter", "dayofyear", "year", "is_weekend",
-        "lag_1", "lag_7", "lag_14", "lag_21", "lag_30",
-        "rolling_7", "rolling_14", "rolling_30", "std_7",
-    ]
-
-    split = int(len(df) * 0.8)
-    train, test = df.iloc[:split], df.iloc[split:]
-
-    X_train, y_train = train[feature_cols], train["y"]
-    X_test,  y_test  = test[feature_cols],  test["y"]
-
-    model = LGBMRegressor(
-        n_estimators=500,
-        learning_rate=0.03,
-        max_depth=6,
-        num_leaves=31,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        min_child_samples=20,
-        random_state=42,
-        verbose=-1,
-    )
-    model.fit(X_train, y_train)
-
-    test_pred = model.predict(X_test)
-    metrics   = _compute_metrics(y_test.values, test_pred)
-
-    residual_std = float(np.std(y_test.values - test_pred))
-
-    # Рекуррентный прогноз в будущее
-    last_known  = df.copy()
-    future_rows = []
-    last_date   = df["ds"].max()
-
-    for i in range(1, forecast_days + 1):
-        next_date = last_date + pd.Timedelta(days=i)
-        row = {
-            "ds":         next_date,
-            "dayofweek":  next_date.dayofweek,
-            "month":      next_date.month,
-            "quarter":    next_date.quarter,
-            "dayofyear":  next_date.dayofyear,
-            "year":       next_date.year,
-            "is_weekend": int(next_date.dayofweek >= 5),
-        }
-        all_y = list(last_known["y"].values) + [r["y_hat"] for r in future_rows]
-        row["lag_1"]  = all_y[-1]  if len(all_y) >= 1  else 0
-        row["lag_7"]  = all_y[-7]  if len(all_y) >= 7  else 0
-        row["lag_14"] = all_y[-14] if len(all_y) >= 14 else 0
-        row["lag_21"] = all_y[-21] if len(all_y) >= 21 else 0
-        row["lag_30"] = all_y[-30] if len(all_y) >= 30 else 0
-        row["rolling_7"]  = np.mean(all_y[-7:])  if len(all_y) >= 7  else np.mean(all_y)
-        row["rolling_14"] = np.mean(all_y[-14:]) if len(all_y) >= 14 else np.mean(all_y)
-        row["rolling_30"] = np.mean(all_y[-30:]) if len(all_y) >= 30 else np.mean(all_y)
-        row["std_7"]      = np.std(all_y[-7:])   if len(all_y) >= 7  else np.std(all_y)
-
-        X_future     = pd.DataFrame([row])[feature_cols]
-        row["y_hat"] = float(model.predict(X_future)[0])
-        future_rows.append(row)
-
-    forecast_df = pd.DataFrame(future_rows)[["ds", "y_hat"]]
-    lower, upper = _make_ci(forecast_df["y_hat"].values, residual_std)
-    forecast_df["lower"] = lower
-    forecast_df["upper"] = upper
-
-    fig = _forecast_plot(
-        history_ds=train["ds"], history_y=train["y"],
-        forecast_ds=forecast_df["ds"], forecast_y=forecast_df["y_hat"],
-        test_ds=test["ds"], test_y=test["y"],
-        title="LightGBM — Прогноз ежедневной выручки",
-        lower=lower, upper=upper,
-    )
-
-    return forecast_df, metrics, fig
-
-
-# ─── 3. XGBoost ───────────────────────────────────────────────────────────────
+# ─── 2. XGBoost ───────────────────────────────────────────────────────────────
 
 def run_xgboost(daily_df: pd.DataFrame, forecast_days: int = 30):
     """
@@ -448,7 +281,7 @@ def compare_forecasts_chart(forecasts: dict, history_ds=None, history_y=None) ->
     Строит все прогнозы на одном графике для визуального сравнения.
 
     Args:
-        forecasts:  {"Random Forest": forecast_df, "LightGBM": ..., "XGBoost": ...}
+        forecasts:  {"Prophet": forecast_df, "XGBoost": ...}
         history_ds: опционально — исторические даты для контекста (последние 60 дней)
         history_y:  опционально — исторические значения
 
@@ -456,9 +289,8 @@ def compare_forecasts_chart(forecasts: dict, history_ds=None, history_y=None) ->
         Plotly Figure
     """
     palette = {
-        "Random Forest": "#2563EB",
-        "LightGBM":      "#16A34A",
-        "XGBoost":       "#EF4444",
+        "Prophet": "#3B82F6",
+        "XGBoost": "#EF4444",
     }
     fig = go.Figure()
 
@@ -491,35 +323,58 @@ def compare_forecasts_chart(forecasts: dict, history_ds=None, history_y=None) ->
 
 def compare_models(metrics_dict: dict) -> go.Figure:
     """
-    Строит сравнительный столбчатый график метрик всех трёх моделей.
+    Строит сравнительный график метрик моделей в виде трёх отдельных subplot-ов
+    (по одному на метрику), чтобы каждая метрика отображалась в своём масштабе.
+    MAE/RMSE измеряются в рублях, MAPE — в процентах, поэтому общая ось Y
+    их некорректно сравнивает.
 
     Args:
-        metrics_dict: {"Random Forest": {...}, "LightGBM": {...}, "XGBoost": {...}}
+        metrics_dict: {"Prophet": {...}, "XGBoost": {...}}
 
     Returns:
         Plotly Figure
     """
-    models  = list(metrics_dict.keys())
-    metrics = ["MAE", "RMSE", "MAPE"]
-    colors  = ["#2563EB", "#16A34A", "#EF4444"]
+    from plotly.subplots import make_subplots
 
-    fig = go.Figure()
-    for metric, color in zip(metrics, colors):
-        values = [metrics_dict[m].get(metric, 0) for m in models]
-        fig.add_trace(go.Bar(
-            name=metric,
-            x=models,
-            y=values,
-            marker_color=color,
-            text=[f"{v:.2f}" for v in values],
-            textposition="outside",
-        ))
+    models = list(metrics_dict.keys())
+    metric_specs = [
+        ("MAE",  "MAE — средняя ошибка, ₽",        "#3B82F6"),
+        ("RMSE", "RMSE — штраф за выбросы, ₽",     "#22C55E"),
+        ("MAPE", "MAPE — относительная ошибка, %", "#EF4444"),
+    ]
+
+    fig = make_subplots(
+        rows=1, cols=3,
+        subplot_titles=[spec[1] for spec in metric_specs],
+        horizontal_spacing=0.10,
+    )
+
+    for col, (key, _, color) in enumerate(metric_specs, start=1):
+        values = [metrics_dict[m].get(key, 0) for m in models]
+        text_labels = (
+            [f"{v:.2f}%" for v in values] if key == "MAPE"
+            else [f"{v:,.0f} ₽" for v in values]
+        )
+        fig.add_trace(
+            go.Bar(
+                x=models,
+                y=values,
+                marker_color=color,
+                text=text_labels,
+                textposition="outside",
+                showlegend=False,
+                cliponaxis=False,
+                hovertemplate="<b>%{x}</b><br>" + key + ": %{text}<extra></extra>",
+            ),
+            row=1, col=col,
+        )
 
     fig.update_layout(
         title="Сравнение метрик качества моделей",
-        barmode="group",
-        xaxis_title="Модель",
-        yaxis_title="Значение метрики",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=420,
+        margin=dict(t=90, b=40, l=40, r=20),
     )
+    fig.update_annotations(font_size=13)
+    fig.update_yaxes(rangemode="tozero")
+
     return fig

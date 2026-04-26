@@ -68,7 +68,7 @@ def save_forecast(
     Сохраняет результат прогноза в базу данных.
 
     Args:
-        model_name:  название модели ("Random Forest", "LightGBM", "XGBoost")
+        model_name:  название модели ("Prophet", "XGBoost")
         metrics:     словарь {"MAE": ..., "RMSE": ..., "MAPE": ...}
         forecast_df: DataFrame с колонками ['ds','y_hat','lower','upper']
         horizon:     горизонт прогноза в днях
