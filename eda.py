@@ -25,7 +25,7 @@ def plot_revenue_over_time(df: pd.DataFrame) -> go.Figure:
         x="month_label",
         y="revenue",
         title="Динамика выручки по месяцам",
-        labels={"month_label": "Месяц", "revenue": "Выручка"},
+        labels={"month_label": "Месяц", "revenue": "Выручка, ₽"},
         markers=True,
         color_discrete_sequence=["#2563EB"],
     )
@@ -49,7 +49,7 @@ def plot_category_revenue(df: pd.DataFrame) -> go.Figure:
         y="category",
         orientation="h",
         title="Выручка по категориям товаров",
-        labels={"revenue": "Выручка", "category": "Категория"},
+        labels={"revenue": "Выручка, ₽", "category": "Категория"},
         color="revenue",
         color_continuous_scale="Blues",
     )
@@ -72,7 +72,7 @@ def plot_mall_revenue(df: pd.DataFrame) -> go.Figure:
         x="shopping_mall",
         y="revenue",
         title="Выручка по торговым центрам",
-        labels={"shopping_mall": "Торговый центр", "revenue": "Выручка"},
+        labels={"shopping_mall": "Торговый центр", "revenue": "Выручка, ₽"},
         color="revenue",
         color_continuous_scale="Teal",
     )
@@ -114,7 +114,7 @@ def plot_revenue_by_weekday(df: pd.DataFrame) -> go.Figure:
         x="day_name",
         y="revenue",
         title="Средняя выручка по дням недели",
-        labels={"day_name": "День недели", "revenue": "Средняя выручка"},
+        labels={"day_name": "День недели", "revenue": "Средняя выручка, ₽"},
         color="revenue",
         color_continuous_scale="Purples",
     )
@@ -172,7 +172,7 @@ def plot_top_products(df: pd.DataFrame, top_n: int = 10) -> go.Figure:
         y="product_name",
         orientation="h",
         title=f"Топ-{top_n} товаров по выручке",
-        labels={"revenue": "Выручка", "product_name": "Товар"},
+        labels={"revenue": "Выручка, ₽", "product_name": "Товар"},
         color="revenue",
         color_continuous_scale="Oranges",
     )

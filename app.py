@@ -43,14 +43,14 @@ init_db()
 st.markdown("""
 <style>
     .metric-card {
-        background: #F8FAFC;
-        border: 1px solid #E2E8F0;
+        background: rgba(37, 99, 235, 0.08);
+        border: 1px solid rgba(37, 99, 235, 0.25);
         border-radius: 10px;
         padding: 16px 20px;
         text-align: center;
     }
-    .metric-value { font-size: 28px; font-weight: 700; color: #1E40AF; }
-    .metric-label { font-size: 13px; color: #64748B; margin-top: 4px; }
+    .metric-value { font-size: 28px; font-weight: 700; color: #60A5FA; }
+    .metric-label { font-size: 13px; opacity: 0.75; margin-top: 4px; }
     .section-header { border-left: 4px solid #2563EB; padding-left: 12px; }
 </style>
 """, unsafe_allow_html=True)
@@ -104,9 +104,9 @@ if page == "🏠 Главная":
 
         cols = st.columns(3)
         metrics_list = [
-            ("💰 Суммарная выручка", f"{stats['total_revenue']:,.0f}"),
+            ("💰 Суммарная выручка", f"{stats['total_revenue']:,.0f} ₽"),
             ("🛒 Количество заказов", f"{stats['total_orders']:,}"),
-            ("📦 Средний чек", f"{stats['avg_order_value']:,.2f}"),
+            ("📦 Средний чек", f"{stats['avg_order_value']:,.2f} ₽"),
             ("🏷️ Категорий товаров", str(stats["num_categories"])),
             ("🏪 Торговых центров", str(stats["num_malls"])),
             ("📅 Период данных", stats["date_range"]),
@@ -131,12 +131,12 @@ if page == "🏠 Главная":
             "age":            "Возраст покупателя",
             "category":       "Категория товара",
             "quantity":       "Количество единиц",
-            "price":          "Цена за единицу",
+            "price":          "Цена за единицу, ₽",
             "payment_method": "Способ оплаты",
             "invoice_date":   "Дата покупки",
             "shopping_mall":  "Точка продаж (магазин, филиал, ТЦ)",
             "product_name":   "Название товара (добавлено при предобработке)",
-            "revenue":        "Выручка = цена × количество",
+            "revenue":        "Выручка = цена × количество, ₽",
         }
         desc_df = pd.DataFrame(
             {"Столбец": list(col_desc.keys()), "Описание": list(col_desc.values())}
@@ -294,8 +294,8 @@ elif page == "🔮 Прогнозирование":
 
 $$ MAE = \\frac{1}{n} \\sum |y_{факт} - y_{прогноз}| $$
 
-Среднее отклонение прогноза от факта **в тех же единицах, что и выручка**.
-Например, MAE = 22 500 означает: в среднем модель ошибается на 22 500 ден. ед. в день.
+Среднее отклонение прогноза от факта **в рублях**.
+Например, MAE = 22 500 ₽ означает: в среднем модель ошибается на 22 500 ₽ в день.
 *Чем меньше — тем лучше.*
 
 #### 📐 RMSE — Root Mean Squared Error (корень из средней квадратичной ошибки)
@@ -352,11 +352,51 @@ $$ MAPE = \\frac{1}{n} \\sum \\left| \\frac{y_{факт} - y_{прогноз}}{y
 
     def show_metrics(metrics: dict):
         c1, c2, c3 = st.columns(3)
-        c1.metric("MAE",  f"{metrics['MAE']:,.2f}")
-        c2.metric("RMSE", f"{metrics['RMSE']:,.2f}")
+        c1.metric("MAE (средняя ошибка)",      f"{metrics['MAE']:,.2f} ₽")
+        c2.metric("RMSE (штраф за выбросы)",   f"{metrics['RMSE']:,.2f} ₽")
         with c3:
-            st.metric("MAPE", "")
+            st.metric("MAPE (ошибка в %)", "")
             st.markdown(mape_badge(metrics["MAPE"]), unsafe_allow_html=True)
+
+    def show_forecast_conclusion(history_df: pd.DataFrame, forecast_df: pd.DataFrame,
+                                  model_name: str, horizon: int) -> None:
+        """Текстовый блок с выводом по результатам прогноза продаж."""
+        hist_avg = history_df.tail(30)["y"].mean()
+        fc_avg   = forecast_df["y_hat"].mean()
+        fc_total = forecast_df["y_hat"].sum()
+        delta_pct = ((fc_avg - hist_avg) / hist_avg * 100) if hist_avg > 0 else 0.0
+
+        if delta_pct > 5:
+            trend_word, trend_emoji = "роста", "📈"
+            trend_color, trend_bg = "#38BDF8", "rgba(56, 189, 248, 0.12)"
+        elif delta_pct < -5:
+            trend_word, trend_emoji = "снижения", "📉"
+            trend_color, trend_bg = "#6366F1", "rgba(99, 102, 241, 0.12)"
+        else:
+            trend_word, trend_emoji = "стабильности", "➡️"
+            trend_color, trend_bg = "#3B82F6", "rgba(59, 130, 246, 0.12)"
+
+        peak_row = forecast_df.loc[forecast_df["y_hat"].idxmax()]
+        low_row  = forecast_df.loc[forecast_df["y_hat"].idxmin()]
+        peak_weekday = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"][peak_row["ds"].weekday()]
+
+        st.markdown(f"""
+        <div style="background:{trend_bg};border-left:4px solid {trend_color};
+                    padding:14px 18px;border-radius:6px;margin-top:8px;margin-bottom:14px">
+            <div style="font-size:15px;font-weight:600;margin-bottom:8px;color:{trend_color}">
+                {trend_emoji} Вывод по прогнозу продаж — {model_name}
+            </div>
+            <div style="font-size:14px;line-height:1.7">
+                На горизонте <b>{horizon} дн.</b> модель прогнозирует <b>тенденцию {trend_word} продаж</b>:
+                среднесуточные продажи изменятся на <b style="color:{trend_color}">{delta_pct:+.1f}%</b>
+                относительно последних 30 дней истории.<br>
+                • <b>Среднесуточные продажи:</b> {fc_avg:,.0f} ₽ <span style="opacity:0.65">(история: {hist_avg:,.0f} ₽)</span><br>
+                • <b>Суммарные продажи за период:</b> {fc_total:,.0f} ₽<br>
+                • <b>Пик продаж</b> ожидается {peak_row['ds'].strftime('%d.%m.%Y')} ({peak_weekday}) — {peak_row['y_hat']:,.0f} ₽<br>
+                • <b>Минимум продаж:</b> {low_row['ds'].strftime('%d.%m.%Y')} — {low_row['y_hat']:,.0f} ₽
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     def export_button(fc_df: pd.DataFrame, model_name: str):
         csv = fc_df.to_csv(index=False).encode("utf-8")
@@ -378,6 +418,7 @@ $$ MAPE = \\frac{1}{n} \\sum \\left| \\frac{y_{факт} - y_{прогноз}}{y
             st.markdown("### Random Forest")
             st.plotly_chart(fig, use_container_width=True)
             show_metrics(metrics)
+            show_forecast_conclusion(daily_df, fc, "Random Forest", horizon)
             export_button(fc, "Random Forest")
             all_metrics["Random Forest"]   = metrics
             all_forecasts["Random Forest"] = fc
@@ -391,6 +432,7 @@ $$ MAPE = \\frac{1}{n} \\sum \\left| \\frac{y_{факт} - y_{прогноз}}{y
             st.markdown("### LightGBM")
             st.plotly_chart(fig, use_container_width=True)
             show_metrics(metrics)
+            show_forecast_conclusion(daily_df, fc, "LightGBM", horizon)
             export_button(fc, "LightGBM")
             all_metrics["LightGBM"]   = metrics
             all_forecasts["LightGBM"] = fc
@@ -404,6 +446,7 @@ $$ MAPE = \\frac{1}{n} \\sum \\left| \\frac{y_{факт} - y_{прогноз}}{y
             st.markdown("### XGBoost")
             st.plotly_chart(fig, use_container_width=True)
             show_metrics(metrics)
+            show_forecast_conclusion(daily_df, fc, "XGBoost", horizon)
             export_button(fc, "XGBoost")
             all_metrics["XGBoost"]   = metrics
             all_forecasts["XGBoost"] = fc
@@ -482,9 +525,9 @@ elif page == "🗂️ История прогнозов":
             row  = history[history["id"] == selected_id].iloc[0]
 
             c1, c2, c3 = st.columns(3)
-            c1.metric("MAE",  f"{row['mae']:,.2f}")
-            c2.metric("RMSE", f"{row['rmse']:,.2f}")
-            c3.metric("MAPE", f"{row['mape']:.2f}%")
+            c1.metric("MAE (средняя ошибка)",    f"{row['mae']:,.2f} ₽")
+            c2.metric("RMSE (штраф за выбросы)", f"{row['rmse']:,.2f} ₽")
+            c3.metric("MAPE (ошибка в %)",       f"{row['mape']:.2f}%")
 
             fig = go.Figure()
             fig.add_trace(go.Scatter(
@@ -503,7 +546,7 @@ elif page == "🗂️ История прогнозов":
             fig.update_layout(
                 title=f"Прогноз ID {selected_id} — {row['model_name']}",
                 xaxis_title="Дата",
-                yaxis_title="Выручка",
+                yaxis_title="Выручка, ₽",
                 hovermode="x unified",
             )
             st.plotly_chart(fig, use_container_width=True)

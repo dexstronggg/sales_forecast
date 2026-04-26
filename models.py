@@ -76,7 +76,7 @@ def _forecast_plot(
     fig.update_layout(
         title=title,
         xaxis_title="Дата",
-        yaxis_title="Выручка",
+        yaxis_title="Выручка, ₽",
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
@@ -480,7 +480,7 @@ def compare_forecasts_chart(forecasts: dict, history_ds=None, history_y=None) ->
     fig.update_layout(
         title="Сравнение прогнозов всех моделей",
         xaxis_title="Дата",
-        yaxis_title="Выручка",
+        yaxis_title="Выручка, ₽",
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
